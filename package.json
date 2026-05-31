@@ -1,0 +1,25 @@
+{
+  "name": "anydrop-mvp",
+  "version": "0.1.0",
+  "description": "Browser-first peer-to-peer file sharing over local network WebRTC DataChannels.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node scripts/dev.js",
+    "build": "node scripts/build.js",
+    "test": "node --test tests",
+    "release": "node scripts/release.js"
+  },
+  "keywords": [
+    "webrtc",
+    "file-transfer",
+    "p2p",
+    "local-network"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=18"
+  }
+}
