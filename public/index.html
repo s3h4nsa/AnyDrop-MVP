@@ -10,7 +10,7 @@
   <nav class="navbar">
     <a class="logo" href="/">
       <span class="logo-icon">
-        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2 18 7v6l-8 5-8-5V7l8-5Z"/></svg>
+        <img src="/assets/logo/logo.png" alt="" aria-hidden="true">
       </span>
       <span class="logo-text">Any<span>Drop</span></span>
     </a>
@@ -45,19 +45,15 @@
         <p class="discovery-info">LAN only - no cloud storage, no account, no file relay.</p>
       </section>
 
-      <section class="dropzone" id="dropzone">
-        <input id="fileInput" type="file">
-        <span class="drop-icon">
-          <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></svg>
-        </span>
-        <strong id="fileName">Drop files here</strong>
-        <small id="fileMeta">or browse files from your device</small>
-        <span class="file-pills">
-          <span>Photos</span>
-          <span>Videos</span>
-          <span>Documents</span>
-          <span>Archives</span>
-        </span>
+      <section class="dropzone" id="dropzone" aria-labelledby="uploadTitle">
+        <h2 id="uploadTitle">Upload Files</h2>
+        <button class="drop-target" id="dropTarget" type="button">
+          <input id="fileInput" type="file" multiple>
+          <strong id="fileName">Drop files here or browse</strong>
+          <small id="fileMeta">Select one or more files up to 1GB each</small>
+        </button>
+        <div class="selected-files-list hidden" id="selectedFilesList"></div>
+        <button class="primary upload-action" id="sendBtn" type="button" disabled>Upload</button>
       </section>
 
       <section class="panel">
@@ -78,7 +74,6 @@
             <h2>Ready to send</h2>
           </div>
         </div>
-        <button class="primary" id="sendBtn" type="button" disabled>Send to selected device</button>
         <div class="progress-card">
           <div class="progress-row">
             <span id="progressLabel"></span>
@@ -87,6 +82,8 @@
           <div class="meter"><div id="progressBar"></div></div>
           <small id="progressDetail">No active transfer.</small>
         </div>
+        <div class="transfer-status-list" id="transferStatusList"></div>
+        <button class="ghost cancel-transfer hidden" id="cancelTransferBtn" type="button">Cancel transfer</button>
       </section>
 
       <section class="panel log-panel">
@@ -116,12 +113,28 @@
 
   <template id="deviceTemplate">
     <button class="peer" type="button">
-      <span class="avatar"></span>
+      <span class="avatar">
+        <img alt="" aria-hidden="true">
+        <span></span>
+      </span>
       <span>
         <strong></strong>
         <small></small>
       </span>
     </button>
+  </template>
+
+  <template id="fileTemplate">
+    <div class="selected-file-card">
+      <span class="file-type-badge">FILE</span>
+      <span class="selected-file-copy">
+        <strong></strong>
+        <small></small>
+      </span>
+      <button class="file-remove" type="button" aria-label="Remove selected file">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>
+      </button>
+    </div>
   </template>
 
   

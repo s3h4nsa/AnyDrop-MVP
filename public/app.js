@@ -10,9 +10,15 @@ const state = {
   socket: null,
   selfId: null,
   devices: [],
-  selectedId: null,
-  selectedFile: null,
+  selectedIds: new Set(),
+  selectedFiles: [],
   pendingRequest: null,
+  outboundTransfers: new Map(),
+  inboundTransfers: new Map(),
+  transferStatuses: new Map(),
+  cancelledTransfers: new Set(),
+  activeInboundSenderId: null,
+  activeInboundTransferId: null,
   peer: null,
   dataChannel: null,
   receiver: null,
@@ -26,6 +32,7 @@ const state = {
 
 const els = {
   acceptBtn: document.querySelector("#acceptBtn"),
+  cancelTransferBtn: document.querySelector("#cancelTransferBtn"),
   clearLogBtn: document.querySelector("#clearLogBtn"),
   connectionStatus: document.querySelector("#connectionStatus"),
   declineBtn: document.querySelector("#declineBtn"),
@@ -34,9 +41,11 @@ const els = {
   deviceList: document.querySelector("#deviceList"),
   deviceName: document.querySelector("#deviceName"),
   dropzone: document.querySelector("#dropzone"),
+  dropTarget: document.querySelector("#dropTarget"),
   fileInput: document.querySelector("#fileInput"),
   fileMeta: document.querySelector("#fileMeta"),
   fileName: document.querySelector("#fileName"),
+  fileTemplate: document.querySelector("#fileTemplate"),
   log: document.querySelector("#log"),
   progressBar: document.querySelector("#progressBar"),
   progressDetail: document.querySelector("#progressDetail"),
@@ -46,8 +55,10 @@ const els = {
   requestBody: document.querySelector("#requestBody"),
   requestDialog: document.querySelector("#requestDialog"),
   requestTitle: document.querySelector("#requestTitle"),
+  selectedFilesList: document.querySelector("#selectedFilesList"),
   sendBtn: document.querySelector("#sendBtn"),
   template: document.querySelector("#deviceTemplate"),
+  transferStatusList: document.querySelector("#transferStatusList"),
   centerSendBtn: document.querySelector("#centerSendBtn"),
   radarCanvas: document.querySelector("#radarCanvas"),
   radarEmpty: document.querySelector("#radarEmpty"),
@@ -58,6 +69,19 @@ const radar = {
   pulses: [],
   lastSeen: new Map(),
 };
+
+function hideEmptyAsset(image) {
+  const update = () => {
+    image.hidden = !image.naturalWidth;
+  };
+  image.addEventListener("load", update);
+  image.addEventListener("error", () => {
+    image.hidden = true;
+  });
+  if (image.complete) update();
+}
+
+document.querySelectorAll(".logo-icon img").forEach(hideEmptyAsset);
 
 function defaultDeviceName() {
   const saved = localStorage.getItem("anydrop.deviceName");
@@ -139,11 +163,29 @@ async function handleSignal(message) {
       showRequest(message);
       break;
     case "transfer-accepted":
-      await startSenderPeer(message.senderId || message.targetId, false);
+      upsertTransferStatus(message.transferId, {
+        name: message.senderName || "Peer",
+        state: "sending",
+        detail: `${message.senderName || "Peer"} accepted. Sending files.`,
+        percent: 0,
+      });
+      await startLanTransfer(message.transferId, message.senderId || message.targetId);
       break;
     case "transfer-declined":
       log(`${message.senderName || "Peer"} declined the transfer.`);
-      resetPeer();
+      upsertTransferStatus(message.transferId, {
+        name: message.senderName || "Peer",
+        state: "declined",
+        detail: `${message.senderName || "Peer"} declined the request.`,
+        percent: 0,
+      });
+      finishOutboundTransfer(message.transferId);
+      resetPeer(false);
+      updateCancelVisibility();
+      maybeClearSentFiles();
+      break;
+    case "transfer-cancelled":
+      handleTransferCancelled(message);
       break;
     case "offer":
       await handleOffer(message);
@@ -193,7 +235,7 @@ function renderDevices() {
     empty.className = "empty";
     empty.textContent = "No other devices online yet. Open /app on another browser or device.";
     els.deviceList.append(empty);
-    state.selectedId = null;
+    state.selectedIds.clear();
     updateSendState();
     return;
   }
@@ -201,8 +243,22 @@ function renderDevices() {
   for (const peer of peers) {
     const node = els.template.content.firstElementChild.cloneNode(true);
     node.dataset.id = peer.id;
-    node.classList.toggle("selected", peer.id === state.selectedId);
-    node.querySelector(".avatar").textContent = (peer.name || "?").slice(0, 1).toUpperCase();
+    node.classList.toggle("selected", state.selectedIds.has(peer.id));
+    const avatar = node.querySelector(".avatar");
+    const avatarImg = avatar.querySelector("img");
+    const avatarFallback = avatar.querySelector("span");
+    avatarImg.hidden = true;
+    avatarImg.src = deviceIconPath(peer.deviceType);
+    avatarImg.addEventListener("load", () => {
+      if (!avatarImg.naturalWidth) return;
+      avatarImg.hidden = false;
+      avatarFallback.hidden = true;
+    });
+    avatarImg.addEventListener("error", () => {
+      avatarImg.hidden = true;
+      avatarFallback.hidden = false;
+    });
+    avatarFallback.textContent = (peer.name || "?").slice(0, 1).toUpperCase();
     node.querySelector("strong").textContent = peer.name;
     node.querySelector("small").textContent = [
       peer.deviceType || "device",
@@ -210,16 +266,21 @@ function renderDevices() {
       peer.ipAddress && peer.ipAddress !== "unknown" ? peer.ipAddress : shortId(peer.id),
     ].join(" - ");
     node.addEventListener("click", () => {
-      state.selectedId = peer.id;
+      if (state.selectedIds.has(peer.id)) {
+        state.selectedIds.delete(peer.id);
+        log(`Unselected ${peer.name}.`);
+      } else {
+        state.selectedIds.add(peer.id);
+        log(`Selected ${peer.name}.`);
+      }
       renderDevices();
       updateSendState();
-      log(`Selected ${peer.name}.`);
     });
     els.deviceList.append(node);
   }
 
-  if (state.selectedId && !peers.some((peer) => peer.id === state.selectedId)) {
-    state.selectedId = null;
+  for (const id of [...state.selectedIds]) {
+    if (!peers.some((peer) => peer.id === id)) state.selectedIds.delete(id);
   }
   updateSendState();
 }
@@ -239,6 +300,16 @@ function radarColor(device) {
   if (type.includes("tablet")) return "#bf5af2";
   if (type.includes("desktop")) return "#30d158";
   return "#0a84ff";
+}
+
+function deviceIconPath(deviceType) {
+  const type = String(deviceType || "").toLowerCase();
+  if (type.includes("phone")) return "/assets/icons/phone.svg";
+  if (type.includes("tablet")) return "/assets/icons/tablet.svg";
+  if (type.includes("desktop")) return "/assets/icons/desktop.svg";
+  if (type.includes("laptop")) return "/assets/icons/laptop.svg";
+  if (type.includes("tv")) return "/assets/icons/tv.svg";
+  return "/assets/icons/unknown.svg";
 }
 
 function radarPosition(device, radius) {
@@ -385,25 +456,170 @@ function drawRadar() {
 }
 
 function updateSendState() {
-  els.sendBtn.disabled = !state.selectedId || !state.selectedFile || state.socket?.readyState !== WebSocket.OPEN;
+  els.sendBtn.disabled =
+    !state.selectedIds.size || !state.selectedFiles.length || state.socket?.readyState !== WebSocket.OPEN;
 }
 
-function setFile(file) {
-  state.selectedFile = file || null;
-  if (!file) {
-    els.fileName.textContent = "Choose a file";
-    els.fileMeta.textContent = "Drag and drop also works.";
-  } else {
-    els.fileName.textContent = file.name;
-    els.fileMeta.textContent = `${formatBytes(file.size)} - ${file.type || "Unknown type"}`;
+function createTransferId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function hasActiveTransfer() {
+  return Boolean(
+    state.pendingRequest ||
+      state.outboundTransfers.size ||
+      state.inboundTransfers.size ||
+      state.activeInboundTransferId,
+  );
+}
+
+function updateCancelVisibility() {
+  els.cancelTransferBtn.classList.toggle("hidden", !hasActiveTransfer());
+}
+
+function transferStateLabel(stateName) {
+  const labels = {
+    waiting: "Waiting",
+    sending: "Sending",
+    receiving: "Receiving",
+    complete: "Complete",
+    declined: "Declined",
+    cancelled: "Cancelled",
+  };
+  return labels[stateName] || "Pending";
+}
+
+function upsertTransferStatus(transferId, patch) {
+  if (!transferId) return;
+  const previous = state.transferStatuses.get(transferId) || {
+    name: "Peer",
+    detail: "Waiting",
+    state: "waiting",
+    percent: 0,
+    completedFiles: 0,
+    totalFiles: 1,
+  };
+  state.transferStatuses.set(transferId, { ...previous, ...patch });
+  renderTransferStatuses();
+}
+
+function renderTransferStatuses() {
+  els.transferStatusList.textContent = "";
+
+  for (const [transferId, item] of state.transferStatuses) {
+    const percent = Math.max(0, Math.min(100, Math.round(item.percent || 0)));
+    const row = document.createElement("article");
+    row.className = "transfer-status-item";
+    row.dataset.transferId = transferId;
+
+    const main = document.createElement("div");
+    main.className = "transfer-status-main";
+
+    const copy = document.createElement("span");
+    const name = document.createElement("strong");
+    name.textContent = item.name || "Peer";
+    const detail = document.createElement("small");
+    detail.textContent = item.detail || "Waiting";
+    copy.append(name, detail);
+
+    const pill = document.createElement("span");
+    pill.className = `transfer-state-pill ${item.state || "waiting"}`;
+    pill.textContent = transferStateLabel(item.state);
+
+    const meter = document.createElement("div");
+    meter.className = "mini-meter";
+    const fill = document.createElement("div");
+    fill.style.width = `${percent}%`;
+    meter.append(fill);
+
+    main.append(copy, pill);
+    row.append(main, meter);
+    els.transferStatusList.append(row);
   }
+}
+
+function finishOutboundTransfer(transferId) {
+  if (transferId) {
+    state.outboundTransfers.delete(transferId);
+    state.cancelledTransfers.delete(transferId);
+  }
+}
+
+function maybeClearSentFiles() {
+  if (!state.outboundTransfers.size) setFiles([]);
+}
+
+function fileTypeLabel(file) {
+  const parts = (file?.name || "").split(".");
+  if (parts.length < 2) return "FILE";
+  return parts.pop().toUpperCase().slice(0, 4);
+}
+
+function totalSelectedSize() {
+  return state.selectedFiles.reduce((total, file) => total + file.size, 0);
+}
+
+function renderSelectedFiles() {
+  els.selectedFilesList.textContent = "";
+  els.selectedFilesList.classList.toggle("hidden", state.selectedFiles.length === 0);
+
+  for (const [index, file] of state.selectedFiles.entries()) {
+    const node = els.fileTemplate.content.firstElementChild.cloneNode(true);
+    node.querySelector(".file-type-badge").textContent = fileTypeLabel(file);
+    node.querySelector("strong").textContent = file.name;
+    node.querySelector("small").textContent = `${formatBytes(file.size)} - ${file.type || "Unknown type"}`;
+    node.querySelector(".file-remove").addEventListener("click", (event) => {
+      event.stopPropagation();
+      state.selectedFiles.splice(index, 1);
+      renderSelectedFiles();
+      updateFileDropCopy();
+      updateSendState();
+    });
+    els.selectedFilesList.append(node);
+  }
+}
+
+function updateFileDropCopy() {
+  if (!state.selectedFiles.length) {
+    els.fileInput.value = "";
+    els.fileName.textContent = "Drop files here or browse";
+    els.fileMeta.textContent = "Select one or more files up to 1GB each";
+  } else {
+    const fileLabel = state.selectedFiles.length === 1 ? "1 file ready" : `${state.selectedFiles.length} files ready`;
+    els.fileName.textContent = fileLabel;
+    els.fileMeta.textContent = `${formatBytes(totalSelectedSize())} selected - choose one or more devices`;
+  }
+}
+
+function setFiles(files) {
+  state.selectedFiles = [...(files || [])].filter(Boolean);
+  renderSelectedFiles();
+  updateFileDropCopy();
   updateSendState();
 }
 
 function showRequest(request) {
   state.pendingRequest = request;
-  els.requestTitle.textContent = `${request.senderName || "A device"} wants to send a file`;
-  els.requestBody.textContent = `${request.fileName} (${formatBytes(request.fileSize || 0)})`;
+  const files = Array.isArray(request.files) ? request.files : [];
+  const fileCount = files.length || 1;
+  const totalSize = files.length
+    ? files.reduce((total, file) => total + Number(file.size || 0), 0)
+    : Number(request.fileSize || 0);
+  upsertTransferStatus(request.transferId, {
+    name: request.senderName || "Peer",
+    state: "waiting",
+    detail: `Waiting for you to accept or decline ${fileCount} file${fileCount === 1 ? "" : "s"}.`,
+    percent: 0,
+    totalFiles: fileCount,
+    completedFiles: 0,
+  });
+  els.requestTitle.textContent = `${request.senderName || "A device"} wants to send ${fileCount} file${fileCount === 1 ? "" : "s"}`;
+  els.requestBody.textContent =
+    fileCount === 1
+      ? `${request.fileName || files[0]?.name || "File"} (${formatBytes(totalSize || 0)})`
+      : `${fileCount} files (${formatBytes(totalSize || 0)})`;
+  updateCancelVisibility();
   els.requestDialog.showModal();
 }
 
@@ -458,7 +674,7 @@ function handlePeerFailure() {
 }
 
 async function retrySenderPeer(receiverId) {
-  if (!state.selectedFile) return;
+  if (!state.selectedFiles.length) return;
   if (state.retryCount >= 2) {
     log("Retry limit reached. Switching to LAN fallback.");
     await sendFileViaLan(receiverId);
@@ -499,15 +715,16 @@ function attachDataChannel(channel, mode) {
 
   channel.addEventListener("open", async () => {
     log("DataChannel open.");
-    if (mode === "send" && state.selectedFile) {
+    if (mode === "send" && state.selectedFiles[0]) {
+      const file = state.selectedFiles[0];
       const sender = createTransferSender(channel, {
         onProgress: ({ sent, total, percent }) => {
           setProgress("Sending", percent, `${formatBytes(sent)} / ${formatBytes(total)}`);
         },
       });
-      await sender.sendFile(state.selectedFile);
+      await sender.sendFile(file);
       setProgress("Complete", 100, "File sent directly to peer.");
-      log(`Sent ${state.selectedFile.name}.`);
+      log(`Sent ${file.name}.`);
       cleanupTransferSession();
     }
   });
@@ -520,7 +737,7 @@ function attachDataChannel(channel, mode) {
 }
 
 async function startSenderPeer(receiverId, isRetry = false) {
-  if (!state.selectedFile) return;
+  if (!state.selectedFiles.length) return;
   const previousRetryCount = state.retryCount;
   const peer = createPeer(receiverId, "send");
   state.retryCount = isRetry ? previousRetryCount : 0;
@@ -552,7 +769,7 @@ function updateReceiveProgress({ received, total, percent, fileName }) {
   setProgress(`Receiving ${fileName}`, percent, `${formatBytes(received)} / ${formatBytes(total)}`);
 }
 
-function completeReceive({ blob, fileName }) {
+function downloadBlob(blob, fileName) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
@@ -561,6 +778,10 @@ function completeReceive({ blob, fileName }) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+function completeReceive({ blob, fileName }) {
+  downloadBlob(blob, fileName);
   setProgress("Complete", 100, `${fileName} downloaded.`);
   log(`Received ${fileName}.`);
   cleanupTransferSession();
@@ -586,74 +807,185 @@ function base64ToArrayBuffer(value) {
 }
 
 async function sendFileViaLan(receiverId) {
-  if (!state.selectedFile || !receiverId || state.lanFallbackStarted) return;
-  state.lanFallbackStarted = true;
-  resetPeer(false);
+  const transferId = createTransferId();
+  const files = state.selectedFiles.slice();
+  if (!files.length) return;
+  state.outboundTransfers.set(transferId, { targetId: receiverId, files, cancelled: false });
+  await startLanTransfer(transferId, receiverId);
+}
 
-  const file = state.selectedFile;
+async function startLanTransfer(transferId, receiverId) {
+  const transfer = state.outboundTransfers.get(transferId);
+  if (!transfer || !receiverId || transfer.cancelled || state.cancelledTransfers.has(transferId)) return;
+
+  const target = state.devices.find((device) => device.id === receiverId);
+  const files = transfer.files || [];
+  const totalBytes = files.reduce((total, file) => total + file.size, 0);
   const chunkSize = 32 * 1024;
-  let offset = 0;
+  let sentBytes = 0;
 
-  setProgress("LAN fallback", 0, `Sending ${file.name} through local network server.`);
-  log("Using LAN fallback transfer.");
-
-  send("lan-transfer-start", {
-    targetId: receiverId,
-    fileName: file.name,
-    fileSize: file.size,
-    mimeType: file.type || "application/octet-stream",
+  resetPeer(false);
+  updateCancelVisibility();
+  setProgress("Sending", 0, `Sending ${files.length} file${files.length === 1 ? "" : "s"} to ${target?.name || "peer"}.`);
+  upsertTransferStatus(transferId, {
+    name: target?.name || "Peer",
+    state: "sending",
+    detail: `Sending ${files.length} file${files.length === 1 ? "" : "s"}.`,
+    percent: 0,
+    totalFiles: files.length,
+    completedFiles: 0,
   });
+  log(`Local transfer started for ${target?.name || "peer"}.`);
 
-  while (offset < file.size) {
-    const buffer = await file.slice(offset, offset + chunkSize).arrayBuffer();
-    offset += buffer.byteLength;
-    send("lan-transfer-chunk", {
+  for (const [fileIndex, file] of files.entries()) {
+    if (transfer.cancelled || state.cancelledTransfers.has(transferId)) break;
+    const fileId = `${transferId}-${fileIndex}`;
+    let offset = 0;
+
+    send("lan-transfer-start", {
       targetId: receiverId,
-      chunk: arrayBufferToBase64(buffer),
-      offset,
+      transferId,
+      fileId,
+      fileIndex,
+      totalFiles: files.length,
+      fileName: file.name,
       fileSize: file.size,
+      mimeType: file.type || "application/octet-stream",
     });
-    setProgress("LAN fallback", (offset / file.size) * 100, `${formatBytes(offset)} / ${formatBytes(file.size)}`);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    while (offset < file.size) {
+      if (transfer.cancelled || state.cancelledTransfers.has(transferId)) break;
+      const buffer = await file.slice(offset, offset + chunkSize).arrayBuffer();
+      offset += buffer.byteLength;
+      sentBytes += buffer.byteLength;
+      send("lan-transfer-chunk", {
+        targetId: receiverId,
+        transferId,
+        fileId,
+        chunk: arrayBufferToBase64(buffer),
+        offset,
+        fileSize: file.size,
+      });
+      const percent = totalBytes ? (sentBytes / totalBytes) * 100 : 100;
+      setProgress("Sending", percent, `${file.name} - ${formatBytes(sentBytes)} / ${formatBytes(totalBytes)}`);
+      upsertTransferStatus(transferId, {
+        state: "sending",
+        detail: `${file.name} - ${formatBytes(sentBytes)} / ${formatBytes(totalBytes)}`,
+        percent,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    if (transfer.cancelled || state.cancelledTransfers.has(transferId)) break;
+    send("lan-transfer-complete", { targetId: receiverId, transferId, fileId, fileName: file.name });
   }
 
-  send("lan-transfer-complete", { targetId: receiverId, fileName: file.name });
-  setProgress("Complete", 100, "File sent through local network fallback.");
-  log(`LAN fallback sent ${file.name}.`);
-  state.lanFallbackStarted = false;
+  if (transfer.cancelled || state.cancelledTransfers.has(transferId)) {
+    setProgress("Cancelled", 0, "Transfer cancelled.");
+    upsertTransferStatus(transferId, {
+      state: "cancelled",
+      detail: "Transfer cancelled.",
+      percent: 0,
+    });
+    log("Local transfer cancelled.");
+  } else {
+    setProgress("Complete", 100, "Files sent on the local network.");
+    upsertTransferStatus(transferId, {
+      state: "complete",
+      detail: `Sent ${files.length} file${files.length === 1 ? "" : "s"}.`,
+      percent: 100,
+      completedFiles: files.length,
+    });
+    log(`Sent ${files.length} file${files.length === 1 ? "" : "s"} to ${target?.name || "peer"}.`);
+  }
+
+  finishOutboundTransfer(transferId);
+  updateCancelVisibility();
+  maybeClearSentFiles();
 }
 
 function startLanReceive(message) {
-  state.lanReceiver = {
+  const transferId = message.transferId || createTransferId();
+  const fileId = message.fileId || `${transferId}-0`;
+  const totalFiles = Number(message.totalFiles) || 1;
+  const previousStatus = state.transferStatuses.get(transferId) || {};
+  state.activeInboundSenderId = message.senderId;
+  state.activeInboundTransferId = transferId;
+  state.inboundTransfers.set(fileId, {
+    transferId,
+    totalFiles,
     fileName: message.fileName || "anydrop-download",
     fileSize: Number(message.fileSize) || 0,
     mimeType: message.mimeType || "application/octet-stream",
     chunks: [],
     received: 0,
-  };
+  });
   resetPeer(false);
-  setProgress("LAN fallback", 0, `Receiving ${state.lanReceiver.fileName} through local network.`);
-  log(`LAN fallback receiving ${state.lanReceiver.fileName}.`);
+  updateCancelVisibility();
+  setProgress("Receiving", 0, `Receiving ${message.fileName || "file"} on the local network.`);
+  upsertTransferStatus(transferId, {
+    name: message.senderName || previousStatus.name || "Peer",
+    state: "receiving",
+    detail: `Receiving ${message.fileName || "file"} (${Number(message.fileIndex || 0) + 1}/${totalFiles}).`,
+    percent: previousStatus.percent || 0,
+    totalFiles,
+    completedFiles: previousStatus.completedFiles || 0,
+  });
+  log(`Receiving ${message.fileName || "file"} on the local network.`);
 }
 
 function receiveLanChunk(message) {
-  if (!state.lanReceiver || !message.chunk) return;
+  if (!message.chunk || state.cancelledTransfers.has(message.transferId)) return;
+  const fileId = message.fileId || `${message.transferId || "transfer"}-0`;
+  const receiver = state.inboundTransfers.get(fileId);
+  if (!receiver) return;
   const buffer = base64ToArrayBuffer(message.chunk);
-  state.lanReceiver.chunks.push(buffer);
-  state.lanReceiver.received += buffer.byteLength;
-  const total = state.lanReceiver.fileSize || Number(message.fileSize) || state.lanReceiver.received;
+  receiver.chunks.push(buffer);
+  receiver.received += buffer.byteLength;
+  const total = receiver.fileSize || Number(message.fileSize) || receiver.received;
   setProgress(
-    "LAN fallback",
-    total ? (state.lanReceiver.received / total) * 100 : 0,
-    `${formatBytes(state.lanReceiver.received)} / ${formatBytes(total)}`,
+    "Receiving",
+    total ? (receiver.received / total) * 100 : 0,
+    `${receiver.fileName} - ${formatBytes(receiver.received)} / ${formatBytes(total)}`,
   );
+  const status = state.transferStatuses.get(receiver.transferId) || {};
+  const completedBytesWeight = Number(status.completedFiles || 0) / Number(receiver.totalFiles || 1);
+  const currentFileWeight = total ? (receiver.received / total) / Number(receiver.totalFiles || 1) : 0;
+  upsertTransferStatus(receiver.transferId, {
+    state: "receiving",
+    detail: `${receiver.fileName} - ${formatBytes(receiver.received)} / ${formatBytes(total)}`,
+    percent: (completedBytesWeight + currentFileWeight) * 100,
+  });
 }
 
 function completeLanReceive(message) {
-  if (!state.lanReceiver) return;
-  const blob = new Blob(state.lanReceiver.chunks, { type: state.lanReceiver.mimeType });
-  completeReceive({ blob, fileName: message.fileName || state.lanReceiver.fileName });
-  state.lanReceiver = null;
+  const fileId = message.fileId || `${message.transferId || "transfer"}-0`;
+  const receiver = state.inboundTransfers.get(fileId);
+  if (!receiver || state.cancelledTransfers.has(receiver.transferId)) return;
+  const blob = new Blob(receiver.chunks, { type: receiver.mimeType });
+  const fileName = message.fileName || receiver.fileName;
+  downloadBlob(blob, fileName);
+  setProgress("Receiving", 100, `${fileName} downloaded.`);
+  log(`Received ${fileName}.`);
+  state.inboundTransfers.delete(fileId);
+  const status = state.transferStatuses.get(receiver.transferId) || {};
+  const totalFiles = Number(receiver.totalFiles || status.totalFiles || 1);
+  const completedFiles = Math.min(totalFiles, Number(status.completedFiles || 0) + 1);
+  const isComplete = completedFiles >= totalFiles;
+  upsertTransferStatus(receiver.transferId, {
+    state: isComplete ? "complete" : "receiving",
+    detail: isComplete
+      ? `Received ${totalFiles} file${totalFiles === 1 ? "" : "s"}.`
+      : `Received ${completedFiles}/${totalFiles} files.`,
+    percent: isComplete ? 100 : (completedFiles / totalFiles) * 100,
+    completedFiles,
+    totalFiles,
+  });
+  if (!state.inboundTransfers.size) {
+    state.activeInboundSenderId = null;
+    state.activeInboundTransferId = null;
+  }
+  updateCancelVisibility();
 }
 
 function cleanupTransferSession() {
@@ -682,6 +1014,95 @@ function resetPeer(clearProgress = true) {
   if (clearProgress) setProgress("Idle", 0, "No active transfer.");
 }
 
+function cancelCurrentTransfers() {
+  if (state.pendingRequest) {
+    upsertTransferStatus(state.pendingRequest.transferId, {
+      name: state.pendingRequest.senderName || "Peer",
+      state: "cancelled",
+      detail: "You cancelled the incoming request.",
+      percent: 0,
+    });
+    send("transfer-cancelled", {
+      targetId: state.pendingRequest.senderId,
+      transferId: state.pendingRequest.transferId,
+    });
+    log("Incoming transfer cancelled.");
+    state.pendingRequest = null;
+    if (els.requestDialog.open) els.requestDialog.close();
+  }
+
+  for (const [transferId, transfer] of state.outboundTransfers) {
+    transfer.cancelled = true;
+    state.cancelledTransfers.add(transferId);
+    upsertTransferStatus(transferId, {
+      state: "cancelled",
+      detail: "You cancelled this transfer.",
+      percent: 0,
+    });
+    send("transfer-cancelled", {
+      targetId: transfer.targetId,
+      transferId,
+    });
+  }
+
+  if (state.activeInboundTransferId && state.activeInboundSenderId) {
+    state.cancelledTransfers.add(state.activeInboundTransferId);
+    upsertTransferStatus(state.activeInboundTransferId, {
+      state: "cancelled",
+      detail: "You cancelled this download.",
+      percent: 0,
+    });
+    send("transfer-cancelled", {
+      targetId: state.activeInboundSenderId,
+      transferId: state.activeInboundTransferId,
+    });
+  }
+
+  state.inboundTransfers.clear();
+  state.activeInboundSenderId = null;
+  state.activeInboundTransferId = null;
+  state.outboundTransfers.clear();
+  state.lanFallbackStarted = false;
+  setFiles([]);
+  setProgress("Cancelled", 0, "Transfer cancelled.");
+  updateCancelVisibility();
+}
+
+function handleTransferCancelled(message) {
+  const transferId = message.transferId;
+  if (transferId) {
+    state.cancelledTransfers.add(transferId);
+    const outbound = state.outboundTransfers.get(transferId);
+    if (outbound) outbound.cancelled = true;
+    upsertTransferStatus(transferId, {
+      name: message.senderName || state.transferStatuses.get(transferId)?.name || "Peer",
+      state: "cancelled",
+      detail: `${message.senderName || "Peer"} cancelled the transfer.`,
+      percent: 0,
+    });
+    state.outboundTransfers.delete(transferId);
+  }
+
+  for (const [fileId, receiver] of state.inboundTransfers) {
+    if (!transferId || receiver.transferId === transferId) state.inboundTransfers.delete(fileId);
+  }
+
+  if (!transferId || state.pendingRequest?.transferId === transferId) {
+    state.pendingRequest = null;
+    if (els.requestDialog.open) els.requestDialog.close();
+  }
+
+  if (!transferId || state.activeInboundTransferId === transferId) {
+    state.activeInboundSenderId = null;
+    state.activeInboundTransferId = null;
+  }
+
+  setProgress("Cancelled", 0, "Peer cancelled the transfer.");
+  log("Peer cancelled the transfer.");
+  updateCancelVisibility();
+  maybeClearSentFiles();
+}
+
 els.deviceName.value = defaultDeviceName();
 els.deviceForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -694,15 +1115,19 @@ els.clearLogBtn.addEventListener("click", () => {
   els.log.textContent = "";
 });
 
+els.cancelTransferBtn.addEventListener("click", () => {
+  cancelCurrentTransfers();
+});
+
 els.fileInput.addEventListener("change", () => {
-  setFile(els.fileInput.files[0]);
+  setFiles(els.fileInput.files);
 });
 
 els.centerSendBtn?.addEventListener("click", () => {
   els.fileInput.click();
 });
 
-els.dropzone.addEventListener("click", () => {
+els.dropTarget.addEventListener("click", () => {
   els.fileInput.click();
 });
 
@@ -718,38 +1143,85 @@ els.dropzone.addEventListener("dragleave", () => {
 els.dropzone.addEventListener("drop", (event) => {
   event.preventDefault();
   els.dropzone.classList.remove("dragging");
-  setFile(event.dataTransfer.files[0]);
+  setFiles(event.dataTransfer.files);
 });
 
 els.sendBtn.addEventListener("click", () => {
-  const target = state.devices.find((device) => device.id === state.selectedId);
-  if (!target || !state.selectedFile) return;
-  setProgress("Waiting", 0, `Waiting for ${target.name} to accept.`);
-  send("transfer-request", {
-    targetId: target.id,
-    fileName: state.selectedFile.name,
-    fileSize: state.selectedFile.size,
-    mimeType: state.selectedFile.type,
-  });
+  const targets = state.devices.filter((device) => state.selectedIds.has(device.id));
+  if (!targets.length || !state.selectedFiles.length) return;
+  const files = state.selectedFiles.slice();
+  const fileSummary = files.map((file) => ({
+    name: file.name,
+    size: file.size,
+    type: file.type,
+  }));
+  const totalSize = files.reduce((total, file) => total + file.size, 0);
+  setProgress("Waiting", 0, `Waiting for ${targets.length} device${targets.length === 1 ? "" : "s"} to accept.`);
+
+  for (const target of targets) {
+    const transferId = createTransferId();
+    state.outboundTransfers.set(transferId, {
+      targetId: target.id,
+      files,
+      cancelled: false,
+    });
+    upsertTransferStatus(transferId, {
+      name: target.name,
+      state: "waiting",
+      detail: `Waiting for ${target.name} to accept or decline.`,
+      percent: 0,
+      totalFiles: files.length,
+      completedFiles: 0,
+    });
+    send("transfer-request", {
+      targetId: target.id,
+      transferId,
+      files: fileSummary,
+      fileName: files.length === 1 ? files[0].name : `${files.length} files`,
+      fileSize: totalSize,
+      mimeType: files.length === 1 ? files[0].type : "application/octet-stream",
+    });
+    log(`Transfer request sent to ${target.name}.`);
+  }
   state.lanFallbackStarted = false;
-  log(`Transfer request sent to ${target.name}.`);
+  updateCancelVisibility();
 });
 
 els.acceptBtn.addEventListener("click", () => {
   if (!state.pendingRequest) return;
-  send("transfer-accepted", { targetId: state.pendingRequest.senderId });
-  log(`Accepted ${state.pendingRequest.fileName}.`);
+  upsertTransferStatus(state.pendingRequest.transferId, {
+    name: state.pendingRequest.senderName || "Peer",
+    state: "receiving",
+    detail: "Accepted. Waiting for files to arrive.",
+    percent: 0,
+  });
+  send("transfer-accepted", {
+    targetId: state.pendingRequest.senderId,
+    transferId: state.pendingRequest.transferId,
+  });
+  log(`Accepted ${state.pendingRequest.fileName || "incoming files"}.`);
 });
 
 els.declineBtn.addEventListener("click", () => {
   if (!state.pendingRequest) return;
-  send("transfer-declined", { targetId: state.pendingRequest.senderId });
-  log(`Declined ${state.pendingRequest.fileName}.`);
+  upsertTransferStatus(state.pendingRequest.transferId, {
+    name: state.pendingRequest.senderName || "Peer",
+    state: "declined",
+    detail: "You declined this request.",
+    percent: 0,
+  });
+  send("transfer-declined", {
+    targetId: state.pendingRequest.senderId,
+    transferId: state.pendingRequest.transferId,
+  });
+  log(`Declined ${state.pendingRequest.fileName || "incoming files"}.`);
   state.pendingRequest = null;
+  updateCancelVisibility();
 });
 
 els.requestDialog.addEventListener("close", () => {
   state.pendingRequest = null;
+  updateCancelVisibility();
 });
 
 requestAnimationFrame(drawRadar);

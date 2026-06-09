@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Project</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --green:       #ff5100;
+      --green-dim:   #009922;
+      --green-glow:  rgba(0, 255, 65, 0.35);
+      --green-faint: rgba(0, 255, 65, 0.10);
+      --bg:          #000;
+    }
+
+    html, body { width: 100%; height: 100%; background: var(--bg); overflow: hidden; }
+
+    /* ╔══════════════════════════════╗
+       ║       LOADING SCREEN         ║
+       ╚══════════════════════════════╝ */
+
+    #loader {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      z-index: 9999;
+      transition: opacity 0.85s cubic-bezier(0.4, 0, 0.2, 1),
+                  visibility 0.85s;
+    }
+    #loader.out { opacity: 0; visibility: hidden; }
+
+    /* CRT phosphor scanlines */
+    #loader::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0px, transparent 3px,
+        rgba(0,0,0,0.10) 3px, rgba(0,0,0,0.10) 4px
+      );
+      pointer-events: none;
+      z-index: 20;
+    }
+
+    /* Screen vignette */
+    #loader::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center,
+        transparent 45%, rgba(0,0,0,0.72) 100%);
+      pointer-events: none;
+      z-index: 21;
+    }
+
+    /* ── Art zone ─────────────────── */
+    .art-zone {
+      position: relative;
+      z-index: 5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 26px;
+      padding: 20px;
+      width: 100%;
+      max-width: 100vw;
+    }
+
+    /* ── The ASCII art element ──────── */
+    #ascii-art {
+      font-family: 'Courier New', 'Lucida Console', 'Consolas', monospace;
+      color: var(--green);
+      white-space: pre;
+      line-height: 1.2;
+      letter-spacing: 0;
+      text-align: left;
+      user-select: none;
+      /* Responsive font-size is set by JS */
+      font-size: 14px;
+
+      /* Phosphor glow effect */
+      text-shadow:
+        0 0 3px  var(--green),
+        0 0 10px var(--green-glow),
+        0 0 22px rgba(0, 255, 65, 0.12);
+    }
+
+    /* Blinking block cursor appended to art while typing */
+    #ascii-art::after {
+      content: '█';
+      display: inline;
+      animation: blink .65s step-end infinite;
+      color: var(--green);
+    }
+    #ascii-art.done::after { display: none; }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div id="loader">
+    <pre id="ascii-art" aria-label="ASCII art"></pre>
+  </div>
+
+  <script>
+/* ═════════════════════════════════════════════════════════
+   ASCII LOADING SCREEN  ·  Drop-in template
+   ═════════════════════════════════════════════════════════
+
+   ┌─ HOW TO USE YOUR OWN ART ──────────────────────────┐
+   │                                                     │
+   │  Method A — Paste directly (simplest)               │
+   │    Edit the ASCII_ART string below.                 │
+   │                                                     │
+   │  Method B — Load from a .txt file                   │
+   │    Replace run(ASCII_ART) near the bottom with:     │
+   │    fetch('art.txt')                                 │
+   │      .then(r => r.text())                           │
+   │      .then(run);                                    │
+   │                                                     │
+   │  Method C — Load from a .html file                  │
+   │    fetch('art.html')                                │
+   │      .then(r => r.text())                           │
+   │      .then(html => {                                │
+   │        const doc = new DOMParser()                  │
+   │          .parseFromString(html, 'text/html');       │
+   │        run(doc.querySelector('pre').textContent);   │
+   │      });                                            │
+   └─────────────────────────────────────────────────────┘
+
+   RESPONSIVE SCALING
+   ─────────────────────────────────────────────────────
+   Font size is auto-calculated so the art fills up to
+   90% of viewport width and 60% of viewport height,
+   then re-calculated on every window resize.
+   ═════════════════════════════════════════════════════ */
+
+
+/* ┌──────────────────────────────────────┐
+   │  STEP 1 — Paste your ASCII art here  │
+   └──────────────────────────────────────┘ */
+const ASCII_ART = `      
+
+
+
+
+`;
+
+
+/* ┌──────────────────────────────────────┐
+   │  STEP 2 — Tweak settings (optional)  │
+   └──────────────────────────────────────┘ */
+const CONFIG = { totalDuration: 2500 };
+const artEl = document.getElementById('ascii-art');
+
+/* ─────── Responsive font size ──────────
+   Fits the art to the viewport while keeping
+   a legible minimum and a sane maximum.      */
+function idealSize(art) {
+  const lines = art.split('\n');
+  const maxCols = Math.max(...lines.map(l => l.length));
+  const maxRows = lines.length;
+  // Courier New: char width ≈ 0.601 × font-size  |  line-height = 1.20 × font-size
+  const byW = (window.innerWidth * 0.90) / (maxCols * 0.601);
+  const byH = (window.innerHeight * 0.60) / (maxRows * 1.20);
+  return Math.max(4, Math.min(18, Math.floor(Math.min(byW, byH))));
+}
+
+function applySize(art) {
+  const sz = idealSize(art);
+  artEl.style.fontSize   = sz + 'px';
+  artEl.style.lineHeight = (sz * 1.20) + 'px';
+}
+
+/* ─────── Pip / dot animation ─── */
+
+
+/* ─────── Main animation ─────── */
+function run(rawArt) {
+  const art = rawArt.trim();
+  const chars = art.split('');
+  const total = chars.length;
+
+  applySize(art);
+
+  let start = null;
+  let printed = 0;
+
+  function frame(ts) {
+    if (!start) start = ts;
+    const target = Math.min(
+      Math.floor(((ts - start) / CONFIG.totalDuration) * total),
+      total
+    );
+    const toAdd = target - printed;
+
+    if (toAdd > 0) {
+      artEl.textContent += chars.slice(printed, printed + toAdd).join('');
+      printed += toAdd;
+    }
+
+    if (printed < total) requestAnimationFrame(frame);
+  }
+
+  requestAnimationFrame(frame);
+}
+
+window.addEventListener('resize', () => applySize(ASCII_ART.trim()));
+
+/* ═════ KICK OFF ═════════════════════════════════
+   Replace run(ASCII_ART) below if using Method B/C
+   ═════════════════════════════════════════════ */
+fetch('art.txt')
+  .then(r => r.text())
+  .then(run);
+
+  // fetch('ascii-art.html')
+  // .then(r => r.text())
+  // .then(html => {
+  //   const doc = new DOMParser().parseFromString(html, 'text/html');
+  //   run(doc.querySelector('pre').textContent);
+  // });
+</script>
+
+</body>
+</html>

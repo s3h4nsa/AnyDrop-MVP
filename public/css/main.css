@@ -76,10 +76,11 @@ button {
   background: linear-gradient(145deg, var(--blue), var(--green));
 }
 
-.logo-icon svg {
-  width: 16px;
-  height: 16px;
-  fill: var(--white);
+.logo-icon img {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: contain;
 }
 
 .logo-text {
@@ -148,7 +149,7 @@ button {
 
 .device-ring-container {
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -158,8 +159,9 @@ button {
 
 .radar-wrapper {
   position: relative;
-  width: 400px;
-  height: 400px;
+  width: min(480px, 100%);
+  height: min(480px, calc(100vw - 40px));
+  max-height: 480px;
   margin-bottom: 18px;
 }
 
@@ -323,77 +325,154 @@ button:disabled {
 .dropzone {
   position: relative;
   display: grid;
-  place-items: center;
-  gap: 8px;
-  min-height: 220px;
-  padding: 34px 22px;
-  border: 1.5px dashed rgba(10, 132, 255, 0.3);
-  border-radius: 20px;
-  background: rgba(10, 132, 255, 0.035);
+  gap: 18px;
+  width: min(100%, 430px);
+  justify-self: center;
+  padding: 20px;
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.96);
   text-align: center;
-  cursor: pointer;
-  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+  transition: transform 160ms ease, box-shadow 160ms ease;
 }
 
 .dropzone:hover,
 .dropzone.dragging {
-  border-color: rgba(10, 132, 255, 0.65);
-  background: rgba(10, 132, 255, 0.07);
+  box-shadow: var(--shadow-lg);
 }
 
 .dropzone.dragging {
   transform: scale(1.01);
 }
 
-.dropzone input {
+.dropzone h2 {
+  font-size: 15px;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.drop-target {
+  position: relative;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  min-height: 146px;
+  padding: 28px 18px;
+  border-radius: 18px;
+  background: #f4f4f5;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.drop-target input {
   position: absolute;
   width: 1px;
   height: 1px;
   opacity: 0;
 }
 
-.drop-icon {
-  width: 54px;
-  height: 54px;
-  display: grid;
-  place-items: center;
-  border-radius: 15px;
-  background: linear-gradient(145deg, #e8f3ff, #d0e8ff);
+.drop-target strong {
+  font-size: 16px;
+  font-weight: 500;
 }
 
-.drop-icon svg {
-  width: 27px;
-  height: 27px;
+.drop-target small {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.selected-files-list {
+  display: grid;
+  gap: 10px;
+  max-height: 188px;
+  overflow: auto;
+}
+
+.selected-files-list.hidden,
+.cancel-transfer.hidden {
+  display: none;
+}
+
+.selected-file-card {
+  display: grid;
+  grid-template-columns: 40px 1fr 32px;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 10px;
+  border: 1px solid var(--gray1);
+  border-radius: 14px;
+  background: var(--white);
+  text-align: left;
+}
+
+.file-type-badge {
+  width: 28px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: linear-gradient(180deg, #ff6b6b, #ff3b54);
+  color: var(--white);
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.selected-file-copy {
+  min-width: 0;
+}
+
+.selected-file-copy strong,
+.selected-file-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-file-copy strong {
+  font-size: 14px;
+}
+
+.selected-file-copy small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.file-remove {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--gray3);
+  cursor: pointer;
+}
+
+.file-remove:hover {
+  background: var(--gray0);
+  color: var(--red);
+}
+
+.file-remove svg {
+  width: 18px;
+  height: 18px;
   fill: none;
-  stroke: var(--blue);
+  stroke: currentColor;
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.dropzone strong {
-  font-size: 17px;
-}
-
-.dropzone small {
-  color: var(--muted);
-}
-
-.file-pills {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.file-pills span {
-  padding: 4px 10px;
+.upload-action {
+  min-height: 36px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.05);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
+  background: #111111;
+}
+
+.cancel-transfer {
+  width: 100%;
 }
 
 .panel {
@@ -471,6 +550,17 @@ h2 {
   font-weight: 900;
 }
 
+.avatar img {
+  width: 24px;
+  height: 24px;
+  grid-area: 1 / 1;
+  object-fit: contain;
+}
+
+.avatar span {
+  grid-area: 1 / 1;
+}
+
 .peer strong,
 .peer small {
   display: block;
@@ -518,6 +608,88 @@ h2 {
 
 .progress-card small {
   color: var(--muted);
+}
+
+.transfer-status-list {
+  display: grid;
+  gap: 10px;
+}
+
+.transfer-status-list:empty {
+  display: none;
+}
+
+.transfer-status-item {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--gray1);
+  border-radius: 14px;
+  background: var(--white);
+}
+
+.transfer-status-main {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.transfer-status-main strong,
+.transfer-status-main small {
+  display: block;
+}
+
+.transfer-status-main strong {
+  font-size: 14px;
+}
+
+.transfer-status-main small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.transfer-state-pill {
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--gray0);
+  color: var(--gray4);
+  font-size: 11px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.transfer-state-pill.sending,
+.transfer-state-pill.receiving {
+  background: var(--blue-light);
+  color: var(--blue-dark);
+}
+
+.transfer-state-pill.complete {
+  background: var(--green-light);
+  color: #1a9e3c;
+}
+
+.transfer-state-pill.declined,
+.transfer-state-pill.cancelled {
+  background: rgba(255, 55, 95, 0.1);
+  color: var(--red);
+}
+
+.mini-meter {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--gray0);
+}
+
+.mini-meter div {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--blue);
+  transition: width 220ms ease;
 }
 
 .log {
@@ -585,7 +757,7 @@ dialog::backdrop {
   }
 
   .radar-wrapper {
-    width: 238px;
-    height: 238px;
+    width: min(310px, 100%);
+    height: min(310px, calc(100vw - 20px));
   }
 }

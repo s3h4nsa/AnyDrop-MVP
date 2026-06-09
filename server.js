@@ -209,6 +209,7 @@ function createSignalingServer(registry = createDeviceRegistry()) {
       event === "transfer-request" ||
       event === "transfer-accepted" ||
       event === "transfer-declined" ||
+      event === "transfer-cancelled" ||
       event === "connection-retry" ||
       event === "lan-fallback-request" ||
       event === "lan-transfer-start" ||
