@@ -355,7 +355,7 @@ if (require.main === module) {
   const { server } = createServer();
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`AnyDrop MVP running at http://localhost:${PORT}`);
-    console.log(`Open http://localhost:${PORT}/app on two devices on the same network.`);
+    console.log(`Open http://localhost:${PORT}/ or http://localhost:${PORT}/app on two devices on the same network.`);
   });
 }
 
